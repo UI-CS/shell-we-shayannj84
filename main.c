@@ -53,3 +53,61 @@ int uinxsh_echo(char **args) {
     printf("\n");
     return 1;
 }
+void execute_command(char **args, int is_bg) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (execvp(args[0], args) == -1) perror("uinxsh");
+        exit(EXIT_FAILURE);
+    } else if (!is_bg) waitpid(pid, NULL, 0);
+}
+
+void execute_pipe(char **args, int p_idx) {
+    int fd[2];
+    pipe(fd);
+    args[p_idx] = NULL;
+    if (fork() == 0) {
+        dup2(fd[1], 1); close(fd[0]); close(fd[1]);
+        execvp(args[0], args); exit(0);
+    }
+    if (fork() == 0) {
+        dup2(fd[0], 0); close(fd[1]); close(fd[0]);
+        execvp(args[p_idx+1], &args[p_idx+1]); exit(0);
+    }
+    close(fd[0]); close(fd[1]);
+    wait(NULL); wait(NULL);
+}
+
+char **parse(char *in, int *bg) {
+    char **tokens = malloc(64 * sizeof(char *));
+    char *token = strtok(in, " \t\n");
+    int i = 0;
+    while (token) { tokens[i++] = token; token = strtok(NULL, " \t\n"); }
+    tokens[i] = NULL;
+    if (i > 0 && strcmp(tokens[i-1], "&") == 0) { *bg = 1; tokens[--i] = NULL; }
+    return tokens;
+}
+
+int main() {
+    while (should_run) {
+        while (waitpid(-1, NULL, WNOHANG) > 0);
+        char *in = readline("uinxsh> ");
+        if (!in) break;
+        if (strcmp(in, "!!") == 0) {
+            HIST_ENTRY *h = history_get(history_length);
+            if (h) { printf("%s\n", h->line); in = strdup(h->line); }
+        }
+        add_history(in);
+        int bg = 0;
+        char **args = parse(in, &bg);
+        if (args[0]) {
+            int p_idx = -1;
+            for (int i = 0; args[i]; i++) if (strcmp(args[i], "|") == 0) p_idx = i;
+            if (!run_builtin(args)) {
+                if (p_idx != -1) execute_pipe(args, p_idx);
+                else execute_command(args, bg);
+            }
+        }
+        free(args); free(in);
+    }
+    return 0;
+}
